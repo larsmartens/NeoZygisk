@@ -72,7 +72,13 @@ static int handle_version();
  */
 int main(int argc, char **argv) {
     // This initialization is for the daemon's internal logic, not for CLI output.
-    zygiskd::Init(getenv("TMP_PATH"));
+    // Guard against NULL TMP_PATH to prevent SIGSEGV when constructing std::string.
+    const char *tmp_path = getenv("TMP_PATH");
+    if (tmp_path == nullptr) {
+        fprintf(stderr, "warning: TMP_PATH not set, using default /data/adb/neozygisk\n");
+        tmp_path = "/data/adb/neozygisk";
+    }
+    zygiskd::Init(tmp_path);
 
     if (argc < 2) {
         print_usage(argv[0]);

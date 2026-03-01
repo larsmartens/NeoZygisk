@@ -147,6 +147,7 @@ private:
     public:
         explicit SigChldHandler(AppMonitor &monitor) : monitor_(monitor) {}
         bool Init();
+        void ScanExistingZygotes();
         int GetFd() override;
         void HandleEvent(EventLoop &, uint32_t) override;
         ~SigChldHandler() override;
