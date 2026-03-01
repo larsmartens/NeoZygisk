@@ -10,7 +10,11 @@
 namespace zygiskd {
 static std::string TMP_PATH;
 
-void Init(const char *path) { TMP_PATH = path; }
+void Init(const char *path) {
+    if (path != nullptr) {
+        TMP_PATH = path;
+    }
+}
 
 std::string GetTmpPath() { return TMP_PATH; }
 
