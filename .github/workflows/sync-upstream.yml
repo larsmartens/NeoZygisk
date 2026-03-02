@@ -153,10 +153,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Delete existing 'latest' release if present
-          gh release delete latest --yes 2>/dev/null || true
+          gh release delete latest -R "${{ github.repository }}" --yes 2>/dev/null || true
           git push origin :refs/tags/latest 2>/dev/null || true
 
-          gh release create latest \
+          gh release create latest -R "${{ github.repository }}" \
             "${{ steps.version.outputs.release_zip }}" \
             --title "NeoZygisk ${{ steps.version.outputs.ver_name }} (larsmartens fork)" \
             --notes "Auto-synced from upstream JingMatrix/NeoZygisk with Magisk Alpha compatibility patch.
