@@ -18,6 +18,8 @@
 // Use string_view literals for efficient, allocation-free string comparisons.
 using namespace std::string_view_literals;
 
+const char *const kWorkDirectory = WORK_DIRECTORY;
+
 // The main entry point for the monitoring process.
 void init_monitor() {
     LOGI("NeoZygisk %s", ZKSU_VERSION);
