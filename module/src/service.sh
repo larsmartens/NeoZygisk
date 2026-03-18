@@ -21,3 +21,11 @@ if [ "$(which magisk)" ]; then
     fi
   done
 fi
+
+# Existing zygotes are already past the injector's startup hook point.
+# Restart zygote once per boot after the monitor is live so ptrace can catch
+# a fresh fork from init instead of attempting an unsafe late attach.
+(
+  sleep 10
+  setprop ctl.restart zygote
+) &

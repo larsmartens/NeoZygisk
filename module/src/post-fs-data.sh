@@ -27,6 +27,7 @@ create_sys_perm() {
 }
 
 TMP_PATH=@WORK_DIRECTORY@
+export TMP_PATH
 
 if [ -d $TMP_PATH ]; then
   rm -rf $TMP_PATH

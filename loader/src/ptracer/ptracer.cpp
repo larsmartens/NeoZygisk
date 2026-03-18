@@ -370,11 +370,20 @@ static bool trace_with_seize(int pid) {
     ptrace(PTRACE_DETACH, pid, 0, 0);                                                              \
     return false;
 
+    // Force an initial ptrace stop. Existing zygotes discovered via /proc are
+    // already SIGSTOPed by the monitor hand-off, and some kernels do not emit a
+    // usable initial stop for bare PTRACE_SEIZE on that state.
+    if (ptrace(PTRACE_INTERRUPT, pid, 0, 0) == -1) {
+        PLOGE("ptrace(PTRACE_INTERRUPT) on PID %d", pid);
+        BAIL_AND_DETACH
+    }
+
     // Wait for the initial Seize stop
     if (!wait_for_process(pid, &status)) return false;
 
-    // SEIZE usually stops with SIGSTOP + PTRACE_EVENT_STOP
-    if (STOPPED_WITH(SIGSTOP, PTRACE_EVENT_STOP)) {
+    // Depending on kernel behavior, SEIZE+INTERRUPT can surface as SIGTRAP or
+    // SIGSTOP with PTRACE_EVENT_STOP.
+    if (STOPPED_WITH(SIGSTOP, PTRACE_EVENT_STOP) || STOPPED_WITH(SIGTRAP, PTRACE_EVENT_STOP)) {
         // 1. Inject Payload
         if (!perform_injection(pid)) {
             BAIL_AND_DETACH

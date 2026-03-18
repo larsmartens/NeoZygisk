@@ -150,7 +150,8 @@ fn handle_threaded_action(
 
 /// Initializes global path variables from the environment.
 fn initialize_globals() -> Result<()> {
-    let tmp_path = std::env::var("TMP_PATH").context("TMP_PATH environment variable not set")?;
+    let tmp_path =
+        std::env::var("TMP_PATH").unwrap_or_else(|_| "/data/adb/neozygisk".to_string());
     TMP_PATH.set(tmp_path).unwrap();
 
     CONTROLLER_SOCKET
