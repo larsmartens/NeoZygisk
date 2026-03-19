@@ -136,7 +136,10 @@ jobs:
           fi
 
       - name: Push synced branch
-        run: git push origin HEAD
+        run: |
+          git fetch origin master
+          git rebase origin/master
+          git push origin HEAD
 
       - name: Create or update daily release
         env:
