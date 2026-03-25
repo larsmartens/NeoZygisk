@@ -2,6 +2,42 @@
 
 _Commit titles and messages for `v2.3..v2.3 daily`._
 
+## Update SELinux policy to read mount namespace (#98)
+
+The following SELinux audit logs are observed on AVD emulated devices (based on qemu):
+```
+auditd  : type=1400 audit(0.0:9): avc:  denied  { read } for  comm="main" path="mnt:[4026532964]" dev="nsfs" ino=4026532964 scontext=u:r:zygote:s0 tcontext=u:object_r
+```
+which caused the failure of NeoZygisk updating mount namespace of root process.
+- Commit: `f779511`
+- Author: JingMatrix
+- Date: 2026-02-18
+
+## Fix SIGSEGV by skipping non-readable stack guard pages (#95)
+
+This commit fixeas a crash observed on specific devices (e.g., Redmi Note 10 Pro "sweet", Kernel 4.14) where `nativeForkSystemServer_pre` triggered a SIGSEGV (SEGV_ACCERR) when attempting to read the `[anon:stack_and_tls:main]` memory map.
+
+We conjecture that the kernel on these devices includes the Stack Guard Page as part of the VMA range for the main thread's stack. A Guard Page is a memory region allocated at the limit of the stack with `PROT_NONE` permissions (no read/write/exec) to trap stack overflows.
+
+Changes:
+- Added a check for `PROT_READ` in the map iteration loop.
+- Applied minor clang-format style fixes to pointer alignment in `module.cpp`.
+- Commit: `e0c49d7`
+- Author: JingMatrix
+- Date: 2026-02-19
+
+## Fix name inconsistency in spoofing maps
+
+In NeoZygisk daemon, modules are loaded into memory via `memfd` with name `zygisk-module`.
+
+As these mapped regions are private, it is better to spoof them also as private anonymous memory region.
+
+clang reformatting is applied.
+
+- Commit: `b4d31ab`
+- Author: JingMatrix
+- Date: 2026-02-20
+
 ## Support hierarchical zygote startup via stub processes (#100)
 
 The ptrace monitoring logic has been re-architected to support a new Android startup chain where zygote is not a direct child of the init process. On some devices, the boot sequence is `init -> stub_zygote -> zygote`, which the previous flat monitoring model could not handle.
@@ -217,6 +253,27 @@ The wrapper scirpt `zygisk-ctl.sh` is thus removed.
 
 
 - Commit: `9f55694`
+- Author: Lars Martens
+- Date: 2026-03-25
+
+## chore: sync fork metadata for daily build
+
+
+- Commit: `32f014a`
+- Author: github-actions[bot]
+- Date: 2026-03-25
+
+## chore: sync fork metadata for daily build
+
+
+- Commit: `2a625d3`
+- Author: github-actions[bot]
+- Date: 2026-03-25
+
+## feat(update): generate commit changelog for daily releases
+
+
+- Commit: `a31be70`
 - Author: Lars Martens
 - Date: 2026-03-25
 
