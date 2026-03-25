@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: sync-upstream-daily
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -137,9 +141,17 @@ jobs:
 
       - name: Push synced branch
         run: |
-          git fetch origin master
-          git rebase origin/master
-          git push origin HEAD
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git rebase origin/master
+            if git push origin HEAD:master; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
 
       - name: Create or update daily release
         env:
