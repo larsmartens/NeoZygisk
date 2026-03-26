@@ -277,3 +277,10 @@ The wrapper scirpt `zygisk-ctl.sh` is thus removed.
 - Author: Lars Martens
 - Date: 2026-03-25
 
+## chore: sync fork metadata for daily build
+
+
+- Commit: `dfecdcd`
+- Author: github-actions[bot]
+- Date: 2026-03-25
+
