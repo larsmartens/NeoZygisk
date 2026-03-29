@@ -298,3 +298,10 @@ The wrapper scirpt `zygisk-ctl.sh` is thus removed.
 - Author: github-actions[bot]
 - Date: 2026-03-27
 
+## chore: sync fork metadata for daily build
+
+
+- Commit: `b5e48ab`
+- Author: github-actions[bot]
+- Date: 2026-03-28
+
