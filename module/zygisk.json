@@ -1,6 +1,6 @@
 {
 	"version": "v2.3",
-	"versionCode": 318,
-	"zipUrl": "https://github.com/larsmartens/NeoZygisk/releases/download/daily/NeoZygisk-v2.3-318-0d3c2ac-release.zip",
+	"versionCode": 319,
+	"zipUrl": "https://github.com/larsmartens/NeoZygisk/releases/download/daily/NeoZygisk-v2.3-319-24e3eba-release.zip",
 	"changelog": "https://raw.githubusercontent.com/larsmartens/NeoZygisk/master/module/changelog.md"
 }
