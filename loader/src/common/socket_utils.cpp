@@ -3,11 +3,24 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstddef>
 
+#include "daemon.hpp"
 #include "logging.hpp"
 
 namespace socket_utils {
+
+static ssize_t socket_safe_write(int fd, const void* buf, size_t count) {
+#ifdef MSG_NOSIGNAL
+    ssize_t ret = send(fd, buf, count, MSG_NOSIGNAL);
+    if (ret >= 0) return ret;
+    if (errno != ENOTSOCK && errno != EOPNOTSUPP && errno != EINVAL) {
+        return ret;
+    }
+#endif
+    return write(fd, buf, count);
+}
 
 ssize_t xread(int fd, void* buf, size_t count) {
     size_t read_sz = 0;
@@ -17,12 +30,16 @@ ssize_t xread(int fd, void* buf, size_t count) {
         if (ret < 0) {
             if (errno == EINTR) continue;
             PLOGE("read");
+            if (errno == ECONNRESET || errno == EPIPE || errno == ENOENT) {
+                zygiskd::NoteHandshakeFailure("read");
+            }
             return ret;
         }
         read_sz += ret;
     } while (read_sz != count && ret != 0);
     if (read_sz != count) {
         PLOGE("read (%zu != %zu)", count, read_sz);
+        zygiskd::NoteHandshakeFailure("read-short");
     }
     return read_sz;
 }
@@ -31,16 +48,20 @@ size_t xwrite(int fd, const void* buf, size_t count) {
     size_t write_sz = 0;
     ssize_t ret;
     do {
-        ret = write(fd, (std::byte*) buf + write_sz, count - write_sz);
+        ret = socket_safe_write(fd, (std::byte*) buf + write_sz, count - write_sz);
         if (ret < 0) {
             if (errno == EINTR) continue;
             PLOGE("write");
+            if (errno == ECONNRESET || errno == EPIPE || errno == ENOENT) {
+                zygiskd::NoteHandshakeFailure("write");
+            }
             return write_sz;
         }
         write_sz += ret;
     } while (write_sz != count && ret != 0);
     if (write_sz != count) {
         PLOGE("write (%zu != %zu)", count, write_sz);
+        zygiskd::NoteHandshakeFailure("write-short");
     }
     return write_sz;
 }

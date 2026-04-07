@@ -73,6 +73,12 @@ void Init(const char* path);
 
 std::string GetTmpPath();
 
+bool IsEmergencyDisabled();
+
+void NoteHandshakeFailure(const char* stage);
+
+void ClearHandshakeFailures();
+
 bool PingHeartbeat();
 
 std::vector<Module> ReadModules();

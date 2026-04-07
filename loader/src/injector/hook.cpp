@@ -407,6 +407,10 @@ void HookContext::restore_zygote_hook(JNIEnv *env) {
 // -----------------------------------------------------------------
 
 void hook_entry(void *start_addr, size_t block_size) {
+    if (zygiskd::IsEmergencyDisabled()) {
+        LOGW("NeoZygisk emergency disable is active; skipping zygote hook bootstrap");
+        return;
+    }
     g_hook = new HookContext(start_addr, block_size);
     g_hook->hook_plt();
     clean_linker_trace(zygiskd::GetTmpPath().data(), 1, 0, true);
