@@ -12,6 +12,7 @@
 
 #include <cinttypes>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -321,6 +322,25 @@ static bool perform_injection(int pid) {
     return true;
 }
 
+static bool is_neozygisk_mapped(int pid) {
+    auto maps = MapInfo::Scan(std::to_string(pid));
+    for (const auto &info : maps) {
+        if (info.path.find("libzygisk.so") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool detach_and_resume_best_effort(int pid) {
+    if (ptrace(PTRACE_DETACH, pid, 0, SIGCONT) == 0) {
+        return true;
+    }
+    LOGW("ptrace(PTRACE_DETACH, SIGCONT) on PID %d failed with %d: %s", pid, errno,
+         strerror(errno));
+    return detach_with_gki_workaround(pid, SIGCONT);
+}
+
 /**
  * @brief Executes the GKI 2.0 Workaround and detaches.
  *
@@ -357,6 +377,7 @@ static bool detach_with_gki_workaround(int pid, int detach_signal) {
 
 static bool trace_with_seize(int pid) {
     LOGI("attempting trace_seize on PID %d", pid);
+    bool injected = false;
 
     // PTRACE_O_EXITKILL ensures Zygote dies if we crash, preventing a zombie state.
     if (ptrace(PTRACE_SEIZE, pid, 0, PTRACE_O_EXITKILL) == -1) {
@@ -388,6 +409,7 @@ static bool trace_with_seize(int pid) {
         if (!perform_injection(pid)) {
             BAIL_AND_DETACH
         }
+        injected = true;
 
         LOGV("injection complete, starting signal continuation sequence");
 
@@ -417,15 +439,18 @@ static bool trace_with_seize(int pid) {
                 // 6. Workaround + Detach
                 return detach_with_gki_workaround(pid, SIGCONT);
             } else {
-                LOGE("unexpected state after SIGTRAP: %s", parse_status(status).c_str());
-                BAIL_AND_DETACH
+                LOGW("unexpected state after SIGTRAP: %s", parse_status(status).c_str());
+                return detach_and_resume_best_effort(pid);
             }
         } else {
-            LOGE("expected SIGTRAP after CONT, got: %s", parse_status(status).c_str());
-            BAIL_AND_DETACH
+            LOGW("expected SIGTRAP after CONT, got: %s", parse_status(status).c_str());
+            return detach_and_resume_best_effort(pid);
         }
     } else {
         LOGE("seize attached, but unexpected initial state: %s", parse_status(status).c_str());
+        if (injected) {
+            return detach_and_resume_best_effort(pid);
+        }
         BAIL_AND_DETACH
     }
 
@@ -469,7 +494,10 @@ static bool trace_with_attach(int pid) {
         // The process is simply stopped by the attach.
         // We use the GKI workaround to ensure the detach is clean.
         // We pass SIGCONT to detach to ensure the process resumes.
-        return detach_with_gki_workaround(pid, SIGCONT);
+        if (detach_with_gki_workaround(pid, SIGCONT)) {
+            return true;
+        }
+        return detach_and_resume_best_effort(pid);
 
     } else {
         LOGE("attach succeeded but process state unexpected: %s", parse_status(status).c_str());
@@ -510,6 +538,12 @@ bool trace_zygote(int pid) {
         // If it wasn't EIO (e.g., EPERM, ESRCH), Attach will likely fail too,
         // or the error is fatal.
         PLOGE("PTRACE_SEIZE failed (errno: %d)", errno);
+    }
+
+    if (is_neozygisk_mapped(pid)) {
+        LOGW("NeoZygisk is already mapped into PID %d despite tracer failure; treating as success",
+             pid);
+        return true;
     }
 
     return false;
