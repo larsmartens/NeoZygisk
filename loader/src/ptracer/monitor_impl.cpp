@@ -101,6 +101,7 @@ void AppMonitor::update_status() {
     std::stringstream ss;
     ss << pre_section_ << "\n" << status_text << "\n\n";
 
+    zygote_.refresh_injection_status();
     std::string abi_section;
     write_abi_status_section(abi_section, zygote_.get_status());
 

@@ -1,13 +1,33 @@
 #include "zygote_abi.hpp"
 
+#include <algorithm>
+#include <dirent.h>
+#include <limits.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <csignal>
+#include <cstdlib>
+#include <memory>
 
+#include "daemon.hpp"
 #include "logging.hpp"
 #include "monitor.hpp"
 #include "utils.hpp"
+
+namespace {
+std::string read_program_path_quiet(const char* pid) {
+    std::string path = "/proc/";
+    path += pid;
+    path += "/exe";
+
+    char buf[PATH_MAX + 1];
+    auto sz = readlink(path.c_str(), buf, PATH_MAX);
+    if (sz <= 0) return {};
+    buf[sz] = '\0';
+    return buf;
+}
+}  // namespace
 
 ZygoteAbiManager::ZygoteAbiManager(AppMonitor& monitor, bool is_64bit)
     : abi_name_(is_64bit ? "64" : "32"),
@@ -16,6 +36,41 @@ ZygoteAbiManager::ZygoteAbiManager(AppMonitor& monitor, bool is_64bit)
       monitor_(monitor) {}
 
 const Status& ZygoteAbiManager::get_status() const { return status_; }
+
+void ZygoteAbiManager::refresh_injection_status() {
+    const auto runtime_lib = zygiskd::GetTmpPath() + "/lib" + abi_name_ + "/libzygisk.so";
+    if (runtime_lib.empty()) {
+        status_.zygote_injected = false;
+        return;
+    }
+
+    bool injected = false;
+    auto proc = std::unique_ptr<DIR, decltype(&closedir)>{opendir("/proc"), &closedir};
+    if (!proc) {
+        PLOGE("opendir /proc");
+        return;
+    }
+
+    while (auto* entry = readdir(proc.get())) {
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+
+        const auto pid = atoi(entry->d_name);
+        if (pid <= 0) continue;
+
+        if (read_program_path_quiet(entry->d_name) != program_path_) continue;
+
+        auto maps = MapInfo::Scan(entry->d_name);
+        auto it = std::find_if(maps.begin(), maps.end(), [&](const MapInfo& map) {
+            return map.path == runtime_lib;
+        });
+        if (it != maps.end()) {
+            injected = true;
+            break;
+        }
+    }
+
+    status_.zygote_injected = injected;
+}
 
 void ZygoteAbiManager::notify_injected() { status_.zygote_injected = true; }
 

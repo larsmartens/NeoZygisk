@@ -30,6 +30,7 @@ public:
 
     // Public methods for state modification
     const Status& get_status() const;
+    void refresh_injection_status();
     void notify_injected();
     void set_daemon_info(std::string_view info);
     void set_daemon_crashed(std::string_view error);
