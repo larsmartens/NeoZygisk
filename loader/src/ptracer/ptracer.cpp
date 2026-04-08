@@ -322,6 +322,8 @@ static bool perform_injection(int pid) {
     return true;
 }
 
+static bool detach_with_gki_workaround(int pid, int detach_signal);
+
 static bool is_neozygisk_mapped(int pid) {
     auto maps = MapInfo::Scan(std::to_string(pid));
     for (const auto &info : maps) {
