@@ -368,3 +368,38 @@ The wrapper scirpt `zygisk-ctl.sh` is thus removed.
 - Author: github-actions[bot]
 - Date: 2026-04-06
 
+## chore: sync fork metadata for daily build
+
+
+- Commit: `45cb1f0`
+- Author: github-actions[bot]
+- Date: 2026-04-07
+
+## fix(loader): fail closed on zygiskd handshake resets
+
+
+- Commit: `675bae2`
+- Author: Lars Martens
+- Date: 2026-04-07
+
+## fix(ptracer): derive zygote injection status from live maps
+
+
+- Commit: `7b80b1e`
+- Author: Lars Martens
+- Date: 2026-04-08
+
+## fix(ptracer): avoid killing zygote after successful injection
+
+
+- Commit: `1075c8b`
+- Author: Lars Martens
+- Date: 2026-04-08
+
+## fix(ptracer): restore helper declaration order
+
+
+- Commit: `d84978e`
+- Author: Lars Martens
+- Date: 2026-04-08
+
