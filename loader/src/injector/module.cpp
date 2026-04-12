@@ -193,7 +193,7 @@ void ZygiskContext::sanitize_fds() {
         return;
     }
 
-    if (can_exempt_fd() && !exempted_fds.empty()) {
+    if (can_exempt_fd()) {
         auto update_fd_array = [&](int old_len) -> jintArray {
             jintArray array = env->NewIntArray(static_cast<int>(old_len + exempted_fds.size()));
             if (array == nullptr) return nullptr;
@@ -218,11 +218,13 @@ void ZygiskContext::sanitize_fds() {
                     allowed_fds[fd] = true;
                 }
             }
-            if (jintArray newFdList = update_fd_array(len)) {
-                env->SetIntArrayRegion(newFdList, 0, len, arr);
+            if (!exempted_fds.empty()) {
+                if (jintArray newFdList = update_fd_array(len)) {
+                    env->SetIntArrayRegion(newFdList, 0, len, arr);
+                }
             }
             env->ReleaseIntArrayElements(fdsToIgnore, arr, JNI_ABORT);
-        } else {
+        } else if (!exempted_fds.empty()) {
             update_fd_array(0);
         }
     }
