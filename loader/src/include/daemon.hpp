@@ -78,6 +78,7 @@ bool IsEmergencyDisabled();
 void NoteHandshakeFailure(const char* stage);
 
 void ClearHandshakeFailures();
+int Connect(uint8_t retry);
 
 bool PingHeartbeat();
 
