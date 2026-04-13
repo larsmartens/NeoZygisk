@@ -8,6 +8,7 @@ This fork tracks `JingMatrix/NeoZygisk` and keeps a narrow fork layer for this s
 - the maintained Magisk Alpha compatibility work is carried on top of upstream
 - a scheduled workflow merges upstream `master` into this fork daily and rebuilds/releases when upstream moved
 - release assets are published from the fork so on-device installs can stay aligned with the fork build
+- the Android 16 fd-sanitization regression and the verification workflow are documented in [docs/android16-notes.md](docs/android16-notes.md)
 
 NeoZygisk is a Zygote injection module, implemented via [`ptrace`](https://man7.org/linux/man-pages/man2/ptrace.2.html), that provides Zygisk API support for APatch and KernelSU.
 It also functions as a powerful replacement for Magisk's built-in Zygisk.
