@@ -154,9 +154,16 @@ jobs:
 
       - name: Push synced branch
         run: |
+          if git push origin HEAD:master; then
+            exit 0
+          fi
+
           for attempt in 1 2 3; do
             git fetch origin master
-            git rebase origin/master
+            git merge --no-edit -X ours origin/master || {
+              git merge --abort || true
+              exit 1
+            }
             if git push origin HEAD:master; then
               exit 0
             fi
