@@ -424,3 +424,67 @@ The wrapper scirpt `zygisk-ctl.sh` is thus removed.
 - Author: github-actions[bot]
 - Date: 2026-04-11
 
+## chore: sync fork metadata for daily build
+
+
+- Commit: `7a4b60e`
+- Author: github-actions[bot]
+- Date: 2026-04-12
+
+## fix: preserve framework fds_to_ignore during fd sanitization
+
+
+- Commit: `7643a91`
+- Author: Lars Martens
+- Date: 2026-04-12
+
+## ci: gate sync builds and publish daily metadata
+
+
+- Commit: `7b57457`
+- Author: Lars Martens
+- Date: 2026-04-12
+
+## Skip module loading for isolated processes (#127)
+
+We implement a connection check to bypass process flag retrieval and module execution for isolated processes when the zygisk daemon is unreachable.
+
+(cherry picked from commit de38c6201b3d4fe0387cb231d525c7a1889a91b5)
+
+- Commit: `2d35d6d`
+- Author: JingMatrix
+- Date: 2026-04-12
+
+## chore: publish NeoZygisk 333 update metadata
+
+
+- Commit: `f855761`
+- Author: Lars Martens
+- Date: 2026-04-13
+
+## docs: capture android 16 fd regression notes
+
+
+- Commit: `baa03e4`
+- Author: Lars Martens
+- Date: 2026-04-13
+
+## Skip module loading for unreachable daemon in isolated processes (#127)
+
+Add a connectivity check for isolated processes to avoid the overhead of attempting flag retrieval and module execution when zygiskd is unreachable.
+
+This optimization does not change the functional logic, as both GetProcessFlags and run_modules_pre already depend on a successful connection to the daemon to perform any meaningful work. If the daemon is unreachable, these steps would eventually fail or be skipped anyway; performing the check upfront simply avoids redundant IPC attempts.
+
+Note: The connection check must use a scoped handle (UniqueFd) to ensure the socket is closed immediately. Failure to do so will result in a file descriptor leak, leading to resource exhaustion and significant app launch delays.
+
+- Commit: `8b12252`
+- Author: JingMatrix
+- Date: 2026-04-12
+
+## fix: avoid rebasing sync metadata commits
+
+
+- Commit: `f74372e`
+- Author: Lars Martens
+- Date: 2026-04-29
+
