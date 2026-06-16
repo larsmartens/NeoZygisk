@@ -166,7 +166,7 @@ pub fn unix_listener_from_path(path: &str) -> Result<UnixListener> {
     let socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
     bind(&socket, &addr)?;
     listen(&socket, 10)?; // Backlog of 10
-    chcon(path, "u:object_r:zygisk_file:s0")?;
+    chcon(path, "u:object_r:system_file:s0")?;
     Ok(UnixListener::from(socket))
 }
 

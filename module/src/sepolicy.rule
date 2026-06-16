@@ -1,17 +1,22 @@
-type zygisk_file file_type
-typeattribute zygisk_file mlstrustedobject
-allow zygote zygisk_file sock_file {read write}
+# NeoZygisk / KernelSU / Android 16 minimal runtime policy.
+# Do not declare custom file types here. On this Pixel 7 Pro boot,
+# zygisk_file was left unmapped and the KernelSU sepolicy batch failed.
 
-allow zygote magisk lnk_file read
-allow zygote unlabeled file {read open}
-allow zygote zygote capability sys_chroot
-allow zygote su dir search
-allow zygote su {lnk_file file} read
+# Permit zygote to traverse /data/adb so dlopen can reach the staged library.
+allow zygote adb_data_file dir {getattr open read search}
 
-allow zygote adb_data_file dir search
+# The runtime tree /data/adb/neozygisk and libzygisk.so are staged as system_file.
+allow zygote system_file dir {getattr open read search}
+allow zygote system_file file {getattr open read map execute}
+
+# Runtime sockets must not be labelled zygisk_file. If NeoZygisk creates sockets
+# under /data/adb/neozygisk, keep/use system_file and allow basic socket I/O.
+allow zygote system_file sock_file {getattr open read write}
+
+# Existing NeoZygisk runtime needs.
 allow zygote zygote process execmem
 allow system_server system_server process execmem
-allow zygote tmpfs file *
-allow zygote appdomain_tmpfs file *
-allow zygote proc file *
-allow zygote nsfs file *
+allow zygote tmpfs file {getattr open read write map execute}
+allow zygote appdomain_tmpfs file {getattr open read write map execute}
+allow zygote proc file {getattr open read}
+allow zygote nsfs file {getattr open read}
