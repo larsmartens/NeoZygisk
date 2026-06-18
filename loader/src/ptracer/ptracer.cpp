@@ -70,22 +70,13 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
         return 0;
     }
 
-    int listener = -1;
-    int conn = -1;
-    uintptr_t remote_sock = 0;
+    int local_sock = -1;
+    uintptr_t remote_listener = 0;
+    uintptr_t remote_conn = 0;
     auto cleanup = [&]() {
-        if (conn >= 0) close(conn);
-        if (listener >= 0) close(listener);
+        if (local_sock >= 0) close(local_sock);
         if (local_fd >= 0) close(local_fd);
     };
-
-    listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (listener < 0) {
-        PLOGE("socket listener");
-        cleanup();
-        write_inject_status("fail:listener-socket");
-        return 0;
-    }
 
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
@@ -98,28 +89,19 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
     }
     addr.sun_path[0] = '\0';
     memcpy(addr.sun_path + 1, sock_name.data(), sock_name.size());
-    socklen_t addr_len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + sock_name.size());
-
-    if (bind(listener, reinterpret_cast<sockaddr *>(&addr), addr_len) < 0) {
-        PLOGE("bind abstract listener");
-        cleanup();
-        write_inject_status("fail:listener-bind");
-        return 0;
-    }
-    if (listen(listener, 1) < 0) {
-        PLOGE("listen");
-        cleanup();
-        write_inject_status("fail:listener-listen");
-        return 0;
-    }
+    socklen_t addr_len =
+        static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + sock_name.size());
 
     auto socket_addr = find_func_addr(local_map, remote_map, "libc.so", "socket");
-    auto connect_addr = find_func_addr(local_map, remote_map, "libc.so", "connect");
+    auto bind_addr = find_func_addr(local_map, remote_map, "libc.so", "bind");
+    auto listen_addr = find_func_addr(local_map, remote_map, "libc.so", "listen");
+    auto accept_addr = find_func_addr(local_map, remote_map, "libc.so", "accept");
     auto recvmsg_addr = find_func_addr(local_map, remote_map, "libc.so", "recvmsg");
     auto close_addr = find_func_addr(local_map, remote_map, "libc.so", "close");
     auto android_dlopen_ext_addr =
         find_func_addr(local_map, remote_map, "libdl.so", "android_dlopen_ext");
-    if (!socket_addr || !connect_addr || !recvmsg_addr || !close_addr || !android_dlopen_ext_addr) {
+    if (!socket_addr || !bind_addr || !listen_addr || !accept_addr || !recvmsg_addr ||
+        !close_addr || !android_dlopen_ext_addr) {
         LOGE("failed to resolve one or more fd-loader remote functions");
         cleanup();
         write_inject_status("fail:resolve");
@@ -130,10 +112,10 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
     args.push_back(AF_UNIX);
     args.push_back(SOCK_STREAM);
     args.push_back(0);
-    remote_sock =
+    remote_listener =
         remote_call(pid, regs, reinterpret_cast<uintptr_t>(socket_addr), libc_return_addr, args);
-    if (remote_sock == 0 || static_cast<long>(remote_sock) < 0) {
-        LOGE("remote socket() failed: 0x%" PRIxPTR, remote_sock);
+    if (remote_listener == 0 || static_cast<long>(remote_listener) < 0) {
+        LOGE("remote socket() failed: 0x%" PRIxPTR, remote_listener);
         cleanup();
         write_inject_status("fail:remote-socket");
         return 0;
@@ -142,34 +124,71 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
     uintptr_t remote_addr = push_bytes(pid, regs, &addr, addr_len);
     if (remote_addr == 0) {
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_listener));
         cleanup();
         write_inject_status("fail:push-sockaddr");
         return 0;
     }
 
     args.clear();
-    args.push_back(remote_sock);
+    args.push_back(remote_listener);
     args.push_back(remote_addr);
     args.push_back(addr_len);
-    auto connect_ret =
-        remote_call(pid, regs, reinterpret_cast<uintptr_t>(connect_addr), libc_return_addr, args);
-    if (static_cast<long>(connect_ret) < 0) {
-        LOGE("remote connect() failed: 0x%" PRIxPTR, connect_ret);
+    auto bind_ret =
+        remote_call(pid, regs, reinterpret_cast<uintptr_t>(bind_addr), libc_return_addr, args);
+    if (static_cast<long>(bind_ret) < 0) {
+        LOGE("remote bind() failed: 0x%" PRIxPTR, bind_ret);
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_listener));
         cleanup();
-        write_inject_status("fail:remote-connect");
+        write_inject_status("fail:remote-bind");
         return 0;
     }
 
-    conn = accept(listener, nullptr, nullptr);
-    if (conn < 0) {
-        PLOGE("accept");
+    args.clear();
+    args.push_back(remote_listener);
+    args.push_back(1);
+    auto listen_ret =
+        remote_call(pid, regs, reinterpret_cast<uintptr_t>(listen_addr), libc_return_addr, args);
+    if (static_cast<long>(listen_ret) < 0) {
+        LOGE("remote listen() failed: 0x%" PRIxPTR, listen_ret);
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_listener));
         cleanup();
-        write_inject_status("fail:accept");
+        write_inject_status("fail:remote-listen");
+        return 0;
+    }
+
+    local_sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (local_sock < 0) {
+        PLOGE("local socket");
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
+        cleanup();
+        write_inject_status("fail:local-socket");
+        return 0;
+    }
+    if (connect(local_sock, reinterpret_cast<sockaddr *>(&addr), addr_len) < 0) {
+        PLOGE("local connect to remote listener");
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
+        cleanup();
+        write_inject_status("fail:local-connect");
+        return 0;
+    }
+
+    args.clear();
+    args.push_back(remote_listener);
+    args.push_back(0);
+    args.push_back(0);
+    remote_conn =
+        remote_call(pid, regs, reinterpret_cast<uintptr_t>(accept_addr), libc_return_addr, args);
+    if (remote_conn == 0 || static_cast<long>(remote_conn) < 0) {
+        LOGE("remote accept() failed: 0x%" PRIxPTR, remote_conn);
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
+        cleanup();
+        write_inject_status("fail:remote-accept");
         return 0;
     }
 
@@ -185,11 +204,12 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
     cmsg->cmsg_type = SCM_RIGHTS;
     cmsg->cmsg_len = CMSG_LEN(sizeof(int));
     memcpy(CMSG_DATA(cmsg), &local_fd, sizeof(local_fd));
-    local_msg.msg_controllen = cmsg->cmsg_len;
-    if (sendmsg(conn, &local_msg, 0) != 1) {
+    if (sendmsg(local_sock, &local_msg, 0) != 1) {
         PLOGE("sendmsg SCM_RIGHTS");
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_conn));
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
         cleanup();
         write_inject_status("fail:sendmsg");
         return 0;
@@ -210,14 +230,16 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
     uintptr_t remote_msg_addr = push_bytes(pid, regs, &remote_msg, sizeof(remote_msg));
     if (!remote_dummy_addr || !remote_control_addr || !remote_iov_addr || !remote_msg_addr) {
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_conn));
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
         cleanup();
         write_inject_status("fail:push-recvmsg");
         return 0;
     }
 
     args.clear();
-    args.push_back(remote_sock);
+    args.push_back(remote_conn);
     args.push_back(remote_msg_addr);
     args.push_back(0);
     auto recv_ret =
@@ -225,7 +247,9 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
     if (recv_ret != 1) {
         LOGE("remote recvmsg() returned 0x%" PRIxPTR, recv_ret);
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_conn));
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
         cleanup();
         write_inject_status("fail:remote-recvmsg");
         return 0;
@@ -235,7 +259,9 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
         static_cast<ssize_t>(remote_control.size())) {
         LOGE("failed to read remote control message");
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_conn));
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
         cleanup();
         write_inject_status("fail:read-cmsg");
         return 0;
@@ -246,7 +272,9 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
         remote_cmsg->cmsg_len < CMSG_LEN(sizeof(int))) {
         LOGE("remote control message did not contain SCM_RIGHTS fd");
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_conn));
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
         cleanup();
         write_inject_status("fail:cmsg-parse");
         return 0;
@@ -264,7 +292,9 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
                         remote_lib_fd);
         remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                        static_cast<int>(remote_sock));
+                        static_cast<int>(remote_conn));
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_listener));
         cleanup();
         write_inject_status("fail:push-dlext");
         return 0;
@@ -280,7 +310,9 @@ static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
     remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
                     remote_lib_fd);
     remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
-                    static_cast<int>(remote_sock));
+                    static_cast<int>(remote_conn));
+    remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                    static_cast<int>(remote_listener));
     cleanup();
 
     if (remote_handle == 0) {
