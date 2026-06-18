@@ -3,7 +3,7 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [ master, fix/magisk-alpha-compat ]
+    branches: [ master, fix/magisk-alpha-compat, fd-loader ]
     tags: [ v* ]
   pull_request:
   merge_group:

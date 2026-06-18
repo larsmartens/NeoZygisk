@@ -1,14 +1,20 @@
 #include <dlfcn.h>
 #include <elf.h>
+#include <fcntl.h>
 #include <link.h>
 #include <signal.h>
+#include <sys/socket.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/ptrace.h>
+#include <sys/stat.h>
 #include <sys/system_properties.h>
+#include <sys/un.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <android/dlext.h>
 
 #include <cinttypes>
 #include <cstdio>
@@ -20,6 +26,273 @@
 #include "daemon.hpp"
 #include "logging.hpp"
 #include "utils.hpp"
+
+static uintptr_t push_bytes(int pid, struct user_regs_struct &regs, const void *buf, size_t len,
+                            size_t align = 16) {
+    regs.REG_SP -= len;
+    regs.REG_SP &= ~(static_cast<uintptr_t>(align) - 1);
+    uintptr_t remote_addr = regs.REG_SP;
+    if (write_proc(pid, remote_addr, buf, len) != static_cast<ssize_t>(len)) {
+        LOGE("failed to write %zu bytes to remote process", len);
+        return 0;
+    }
+    return remote_addr;
+}
+
+static void write_inject_status(const char *status) {
+    int fd = open("/data/adb/neozygisk/inject-status", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+                  0644);
+    if (fd < 0) {
+        PLOGE("open inject-status");
+        return;
+    }
+    write(fd, status, strlen(status));
+    write(fd, "\n", 1);
+    close(fd);
+}
+
+static uintptr_t remote_close_fd(int pid, struct user_regs_struct &regs, uintptr_t close_addr,
+                                 uintptr_t return_addr, int fd) {
+    std::vector<long> args;
+    args.push_back(fd);
+    return remote_call(pid, regs, close_addr, return_addr, args);
+}
+
+static uintptr_t dlopen_via_transferred_fd(int pid, const char *lib_path,
+                                           const std::vector<MapInfo> &local_map,
+                                           const std::vector<MapInfo> &remote_map,
+                                           uintptr_t libc_return_addr,
+                                           struct user_regs_struct &regs) {
+    int local_fd = open(lib_path, O_RDONLY | O_CLOEXEC);
+    if (local_fd < 0) {
+        PLOGE("open %s", lib_path);
+        write_inject_status("fail:fd-open");
+        return 0;
+    }
+
+    int listener = -1;
+    int conn = -1;
+    uintptr_t remote_sock = 0;
+    auto cleanup = [&]() {
+        if (conn >= 0) close(conn);
+        if (listener >= 0) close(listener);
+        if (local_fd >= 0) close(local_fd);
+    };
+
+    listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (listener < 0) {
+        PLOGE("socket listener");
+        cleanup();
+        write_inject_status("fail:listener-socket");
+        return 0;
+    }
+
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    std::string sock_name = "neozygisk-inj-" + std::to_string(pid) + "-" + std::to_string(getpid());
+    if (sock_name.size() + 1 >= sizeof(addr.sun_path)) {
+        LOGE("abstract socket name is too long");
+        cleanup();
+        write_inject_status("fail:socket-name");
+        return 0;
+    }
+    addr.sun_path[0] = '\0';
+    memcpy(addr.sun_path + 1, sock_name.data(), sock_name.size());
+    socklen_t addr_len = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + 1 + sock_name.size());
+
+    if (bind(listener, reinterpret_cast<sockaddr *>(&addr), addr_len) < 0) {
+        PLOGE("bind abstract listener");
+        cleanup();
+        write_inject_status("fail:listener-bind");
+        return 0;
+    }
+    if (listen(listener, 1) < 0) {
+        PLOGE("listen");
+        cleanup();
+        write_inject_status("fail:listener-listen");
+        return 0;
+    }
+
+    auto socket_addr = find_func_addr(local_map, remote_map, "libc.so", "socket");
+    auto connect_addr = find_func_addr(local_map, remote_map, "libc.so", "connect");
+    auto recvmsg_addr = find_func_addr(local_map, remote_map, "libc.so", "recvmsg");
+    auto close_addr = find_func_addr(local_map, remote_map, "libc.so", "close");
+    auto android_dlopen_ext_addr =
+        find_func_addr(local_map, remote_map, "libdl.so", "android_dlopen_ext");
+    if (!socket_addr || !connect_addr || !recvmsg_addr || !close_addr || !android_dlopen_ext_addr) {
+        LOGE("failed to resolve one or more fd-loader remote functions");
+        cleanup();
+        write_inject_status("fail:resolve");
+        return 0;
+    }
+
+    std::vector<long> args;
+    args.push_back(AF_UNIX);
+    args.push_back(SOCK_STREAM);
+    args.push_back(0);
+    remote_sock =
+        remote_call(pid, regs, reinterpret_cast<uintptr_t>(socket_addr), libc_return_addr, args);
+    if (remote_sock == 0 || static_cast<long>(remote_sock) < 0) {
+        LOGE("remote socket() failed: 0x%" PRIxPTR, remote_sock);
+        cleanup();
+        write_inject_status("fail:remote-socket");
+        return 0;
+    }
+
+    uintptr_t remote_addr = push_bytes(pid, regs, &addr, addr_len);
+    if (remote_addr == 0) {
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:push-sockaddr");
+        return 0;
+    }
+
+    args.clear();
+    args.push_back(remote_sock);
+    args.push_back(remote_addr);
+    args.push_back(addr_len);
+    auto connect_ret =
+        remote_call(pid, regs, reinterpret_cast<uintptr_t>(connect_addr), libc_return_addr, args);
+    if (static_cast<long>(connect_ret) < 0) {
+        LOGE("remote connect() failed: 0x%" PRIxPTR, connect_ret);
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:remote-connect");
+        return 0;
+    }
+
+    conn = accept(listener, nullptr, nullptr);
+    if (conn < 0) {
+        PLOGE("accept");
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:accept");
+        return 0;
+    }
+
+    char dummy = 'Z';
+    char control[CMSG_SPACE(sizeof(int))]{};
+    iovec local_iov{.iov_base = &dummy, .iov_len = sizeof(dummy)};
+    msghdr local_msg{.msg_iov = &local_iov,
+                     .msg_iovlen = 1,
+                     .msg_control = control,
+                     .msg_controllen = sizeof(control)};
+    cmsghdr *cmsg = CMSG_FIRSTHDR(&local_msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmsg), &local_fd, sizeof(local_fd));
+    local_msg.msg_controllen = cmsg->cmsg_len;
+    if (sendmsg(conn, &local_msg, 0) != 1) {
+        PLOGE("sendmsg SCM_RIGHTS");
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:sendmsg");
+        return 0;
+    }
+
+    char remote_dummy = 0;
+    uintptr_t remote_dummy_addr = push_bytes(pid, regs, &remote_dummy, sizeof(remote_dummy));
+    std::vector<char> remote_control(CMSG_SPACE(sizeof(int)), 0);
+    uintptr_t remote_control_addr =
+        push_bytes(pid, regs, remote_control.data(), remote_control.size());
+    iovec remote_iov{.iov_base = reinterpret_cast<void *>(remote_dummy_addr), .iov_len = 1};
+    uintptr_t remote_iov_addr = push_bytes(pid, regs, &remote_iov, sizeof(remote_iov));
+    msghdr remote_msg{};
+    remote_msg.msg_iov = reinterpret_cast<iovec *>(remote_iov_addr);
+    remote_msg.msg_iovlen = 1;
+    remote_msg.msg_control = reinterpret_cast<void *>(remote_control_addr);
+    remote_msg.msg_controllen = remote_control.size();
+    uintptr_t remote_msg_addr = push_bytes(pid, regs, &remote_msg, sizeof(remote_msg));
+    if (!remote_dummy_addr || !remote_control_addr || !remote_iov_addr || !remote_msg_addr) {
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:push-recvmsg");
+        return 0;
+    }
+
+    args.clear();
+    args.push_back(remote_sock);
+    args.push_back(remote_msg_addr);
+    args.push_back(0);
+    auto recv_ret =
+        remote_call(pid, regs, reinterpret_cast<uintptr_t>(recvmsg_addr), libc_return_addr, args);
+    if (recv_ret != 1) {
+        LOGE("remote recvmsg() returned 0x%" PRIxPTR, recv_ret);
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:remote-recvmsg");
+        return 0;
+    }
+
+    if (read_proc(pid, remote_control_addr, remote_control.data(), remote_control.size()) !=
+        static_cast<ssize_t>(remote_control.size())) {
+        LOGE("failed to read remote control message");
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:read-cmsg");
+        return 0;
+    }
+
+    auto *remote_cmsg = reinterpret_cast<cmsghdr *>(remote_control.data());
+    if (remote_cmsg->cmsg_level != SOL_SOCKET || remote_cmsg->cmsg_type != SCM_RIGHTS ||
+        remote_cmsg->cmsg_len < CMSG_LEN(sizeof(int))) {
+        LOGE("remote control message did not contain SCM_RIGHTS fd");
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:cmsg-parse");
+        return 0;
+    }
+    int remote_lib_fd = -1;
+    memcpy(&remote_lib_fd, CMSG_DATA(remote_cmsg), sizeof(remote_lib_fd));
+    LOGI("received remote library fd %d in PID %d", remote_lib_fd, pid);
+
+    android_dlextinfo extinfo{};
+    extinfo.flags = ANDROID_DLEXT_USE_LIBRARY_FD;
+    extinfo.library_fd = remote_lib_fd;
+    uintptr_t remote_extinfo = push_bytes(pid, regs, &extinfo, sizeof(extinfo), alignof(android_dlextinfo));
+    auto remote_lib_name = push_string(pid, regs, "libzygisk.so");
+    if (!remote_extinfo || !remote_lib_name) {
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        remote_lib_fd);
+        remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                        static_cast<int>(remote_sock));
+        cleanup();
+        write_inject_status("fail:push-dlext");
+        return 0;
+    }
+
+    args.clear();
+    args.push_back(remote_lib_name);
+    args.push_back(RTLD_NOW);
+    args.push_back(remote_extinfo);
+    auto remote_handle = remote_call(pid, regs, reinterpret_cast<uintptr_t>(android_dlopen_ext_addr),
+                                     libc_return_addr, args);
+
+    remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                    remote_lib_fd);
+    remote_close_fd(pid, regs, reinterpret_cast<uintptr_t>(close_addr), libc_return_addr,
+                    static_cast<int>(remote_sock));
+    cleanup();
+
+    if (remote_handle == 0) {
+        LOGE("android_dlopen_ext(USE_LIBRARY_FD) failed");
+        write_inject_status("fail:fd-dlopen");
+        return 0;
+    }
+
+    LOGI("successfully loaded library via transferred fd, handle: 0x%" PRIxPTR, remote_handle);
+    write_inject_status("success:fd-loader");
+    return remote_handle;
+}
 
 /**
  * @brief Injects a shared library into a running process at its main entry point.
@@ -209,35 +482,42 @@ bool inject_on_main(int pid, const char *lib_path) {
         auto dlerror_addr = find_func_addr(local_map, map, "libdl.so", "dlerror");
         if (dlerror_addr == nullptr) {
             LOGE("could not find address of dlerror; cannot retrieve error string");
+        } else {
+            args.clear();
+            auto dlerror_str_addr = remote_call(pid, regs, (uintptr_t) dlerror_addr,
+                                                (uintptr_t) libc_return_addr, args);
+            if (dlerror_str_addr == 0) {
+                LOGE("remote call to dlerror returned null");
+            } else {
+                auto strlen_addr = find_func_addr(local_map, map, "libc.so", "strlen");
+                if (strlen_addr == nullptr) {
+                    LOGE("could not find address of strlen; cannot measure error string length");
+                } else {
+                    args.clear();
+                    args.push_back(dlerror_str_addr);
+                    auto dlerror_len = remote_call(pid, regs, (uintptr_t) strlen_addr,
+                                                   (uintptr_t) libc_return_addr, args);
+                    if (dlerror_len <= 0) {
+                        LOGE("dlerror string length is invalid (%" PRIuPTR ")", dlerror_len);
+                    } else {
+                        std::string err;
+                        err.resize(dlerror_len + 1, 0);
+                        read_proc(pid, (uintptr_t) dlerror_str_addr, err.data(), dlerror_len);
+                        LOGE("dlopen error: %s", err.c_str());
+                    }
+                }
+            }
+        }
+
+        LOGI("path dlopen failed; trying transferred-fd android_dlopen_ext fallback");
+        remote_handle = dlopen_via_transferred_fd(pid, lib_path, local_map, map,
+                                                  (uintptr_t) libc_return_addr, regs);
+        if (remote_handle == 0) {
+            LOGE("fd-loader fallback failed");
             return false;
         }
-        args.clear();
-        auto dlerror_str_addr =
-            remote_call(pid, regs, (uintptr_t) dlerror_addr, (uintptr_t) libc_return_addr, args);
-        if (dlerror_str_addr == 0) {
-            LOGE("remote call to dlerror returned null");
-            return false;
-        }
-        auto strlen_addr = find_func_addr(local_map, map, "libc.so", "strlen");
-        if (strlen_addr == nullptr) {
-            LOGE("could not find address of strlen; cannot measure error string length");
-            return false;
-        }
-        args.clear();
-        args.push_back(dlerror_str_addr);
-        auto dlerror_len =
-            remote_call(pid, regs, (uintptr_t) strlen_addr, (uintptr_t) libc_return_addr, args);
-        if (dlerror_len <= 0) {
-            LOGE("dlerror string length is invalid (%" PRIuPTR ")", dlerror_len);
-            return false;
-        }
-        std::string err;
-        err.resize(dlerror_len + 1, 0);
-        read_proc(pid, (uintptr_t) dlerror_str_addr, err.data(), dlerror_len);
-        LOGE("dlopen error: %s", err.c_str());
-        return false;
     }
-    LOGI("successfully loaded library via remote dlopen, handle: 0x%" PRIxPTR, remote_handle);
+    LOGI("successfully loaded library, handle: 0x%" PRIxPTR, remote_handle);
 
     // Remotely call dlsym(handle, "entry")
     LOGV("executing remote call to dlsym to find the 'entry' symbol");
