@@ -92,17 +92,6 @@ fi
 . "$TMPDIR/verify.sh"
 extract "$ZIPFILE" 'customize.sh'  "$TMPDIR/.vunzip"
 extract "$ZIPFILE" 'verify.sh'     "$TMPDIR/.vunzip"
-extract "$ZIPFILE" 'sepolicy.rule' "$TMPDIR"
-
-if [ "$KSU" ]; then
-  ui_print "- Checking SELinux patches"
-  if ! check_sepolicy "$TMPDIR/sepolicy.rule"; then
-    ui_print "*********************************************************"
-    ui_print "! Unable to apply SELinux patches!"
-    ui_print "! Your kernel may not support SELinux patch fully"
-    abort    "*********************************************************"
-  fi
-fi
 
 ui_print "- Extracting module files"
 extract "$ZIPFILE" 'action.sh'     "$MODPATH"
@@ -110,7 +99,6 @@ extract "$ZIPFILE" 'module.prop'     "$MODPATH"
 extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'service.sh'      "$MODPATH"
 extract "$ZIPFILE" 'uninstall.sh'      "$MODPATH"
-mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 
 mkdir "$MODPATH/bin"
 mkdir "$MODPATH/lib"
