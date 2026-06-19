@@ -72,7 +72,7 @@ ssize_t xrecvmsg(int sockfd, struct msghdr* msg, int flags) {
     return rec;
 }
 
-void* recv_fds(int sockfd, char* cmsgbuf, size_t bufsz, int cnt) {
+void* recv_fds(int sockfd, cmsghdr* alignbuf, size_t bufsz, int cnt) {
     // Create a throwaway buffer.
     // It must match the size Rust sends (sizeof(int) = 4 bytes).
     int dummy_data;
@@ -85,11 +85,11 @@ void* recv_fds(int sockfd, char* cmsgbuf, size_t bufsz, int cnt) {
                   .msg_namelen = 0,
                   .msg_iov = &iov,
                   .msg_iovlen = 1,
-                  .msg_control = cmsgbuf,
+                  .msg_control = alignbuf,
                   .msg_controllen = bufsz,
                   .msg_flags = 0};
 
-    ssize_t rec = xrecvmsg(sockfd, &msg, MSG_WAITALL);
+    ssize_t rec = xrecvmsg(sockfd, &msg, 0);
 
     // --- IO Failed or Stream Desync ---
     if (rec != sizeof(dummy_data)) {
@@ -164,9 +164,12 @@ bool write_string(int fd, std::string_view str) {
 }
 
 int recv_fd(int sockfd) {
-    char cmsgbuf[CMSG_SPACE(sizeof(int))];
+    union {
+        char buf[CMSG_SPACE(sizeof(int))];
+        cmsghdr align;
+    } cmsgbuf{};
 
-    void* data = recv_fds(sockfd, cmsgbuf, sizeof(cmsgbuf), 1);
+    void* data = recv_fds(sockfd, &cmsgbuf.align, sizeof(cmsgbuf.buf), 1);
     if (data == nullptr) return -1;
 
     int result;

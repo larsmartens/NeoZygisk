@@ -21,6 +21,7 @@ use std::fs;
 use std::io::Error;
 use std::os::fd::AsRawFd;
 use std::os::fd::{AsFd, OwnedFd, RawFd};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::{
     os::unix::net::{UnixListener, UnixStream},
@@ -210,7 +211,7 @@ fn get_arch() -> Result<&'static str> {
     }
 }
 
-/// Scans the module directory, loads valid modules, and creates memfds for their libraries.
+/// Scans the module directory, loads valid modules, and opens staged runtime copies.
 fn load_modules() -> Result<Vec<Module>> {
     let arch = get_arch()?;
     debug!("Daemon architecture: {arch}");
@@ -234,7 +235,7 @@ fn load_modules() -> Result<Vec<Module>> {
         }
 
         info!("Loading module `{}`...", name);
-        match create_library_fd(&so_path) {
+        match create_library_fd(&name, &so_path, arch) {
             Ok(lib_fd) => {
                 modules.push(Module {
                     name,
@@ -251,31 +252,40 @@ fn load_modules() -> Result<Vec<Module>> {
     Ok(modules)
 }
 
-/// Creates a sealed, read-only memfd containing the module's shared library.
-/// This is a security measure to prevent the library from being tampered with after loading.
-fn create_library_fd(so_path: &Path) -> Result<OwnedFd> {
-    let opts = memfd::MemfdOptions::default().allow_sealing(true);
-    let memfd = opts.create("zygisk-module")?;
+/// Creates a read-only file descriptor for a runtime-staged copy of a module library.
+///
+/// KernelSU's live sepolicy patching can fail on Android 16, and without that policy zygote-side
+/// code cannot receive/use memfd-backed module libraries. The injector library is already staged
+/// under TMP_PATH as system_file, so module libraries use the same strategy and keep the existing
+/// fd-passing protocol.
+fn create_library_fd(name: &str, so_path: &Path, arch: &str) -> Result<OwnedFd> {
+    let tmp_path = TMP_PATH
+        .get()
+        .map(String::as_str)
+        .unwrap_or("/data/adb/neozygisk");
+    let runtime_root = Path::new(tmp_path).join("modules");
+    let runtime_dir = runtime_root.join(name);
+    let runtime_path = runtime_dir.join(format!("{arch}.so"));
 
-    // Copy the library content into the memfd.
-    let file = fs::File::open(so_path)?;
-    let mut reader = std::io::BufReader::new(file);
-    let mut writer = memfd.as_file();
-    std::io::copy(&mut reader, &mut writer)?;
-
-    // Apply seals to make the memfd immutable.
-    let mut seals = memfd::SealsHashSet::new();
-    seals.insert(memfd::FileSeal::SealShrink);
-    seals.insert(memfd::FileSeal::SealGrow);
-    seals.insert(memfd::FileSeal::SealWrite);
-    seals.insert(memfd::FileSeal::SealSeal);
-
-    if let Err(e) = memfd.add_seals(&seals) {
-        // Ignore errors for the sake of compatibility
-        warn!("Failed to add seals : {}", e);
+    fs::create_dir_all(&runtime_dir)?;
+    fs::set_permissions(&runtime_root, fs::Permissions::from_mode(0o555))?;
+    fs::set_permissions(&runtime_dir, fs::Permissions::from_mode(0o555))?;
+    if let Some(path) = runtime_root.to_str() {
+        let _ = utils::chcon(path, "u:object_r:system_file:s0");
+    }
+    if let Some(path) = runtime_dir.to_str() {
+        let _ = utils::chcon(path, "u:object_r:system_file:s0");
     }
 
-    Ok(OwnedFd::from(memfd.into_file()))
+    fs::copy(so_path, &runtime_path)?;
+    fs::set_permissions(&runtime_path, fs::Permissions::from_mode(0o444))?;
+    if let Some(path) = runtime_path.to_str() {
+        let _ = utils::chcon(path, "u:object_r:system_file:s0");
+        debug!("Staged module `{name}` runtime library at {path}");
+    }
+
+    let file = fs::File::open(runtime_path)?;
+    Ok(OwnedFd::from(file))
 }
 
 /// Creates and binds the main daemon Unix socket.
