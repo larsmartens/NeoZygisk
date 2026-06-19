@@ -159,9 +159,8 @@ fn initialize_globals() -> Result<()> {
         .unwrap();
     DAEMON_SOCKET_PATH
         .set(format!(
-            "{}/{}",
-            TMP_PATH.get().unwrap(),
-            lp_select!("/cp32.sock", "/cp64.sock")
+            "@{}",
+            lp_select!("neozygisk-cp32", "neozygisk-cp64")
         ))
         .unwrap();
     Ok(())
@@ -281,8 +280,11 @@ fn create_library_fd(so_path: &Path) -> Result<OwnedFd> {
 
 /// Creates and binds the main daemon Unix socket.
 fn create_daemon_socket() -> Result<UnixListener> {
-    utils::set_socket_create_context("u:r:zygote:s0")?;
-    let listener = utils::unix_listener_from_path(DAEMON_SOCKET_PATH.get().unwrap())?;
+    let daemon_socket = DAEMON_SOCKET_PATH.get().unwrap();
+    let socket_name = daemon_socket
+        .strip_prefix('@')
+        .unwrap_or(daemon_socket.as_str());
+    let listener = utils::unix_listener_from_abstract_name(socket_name.as_bytes())?;
     Ok(listener)
 }
 

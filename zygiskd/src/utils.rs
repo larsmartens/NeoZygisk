@@ -170,6 +170,15 @@ pub fn unix_listener_from_path(path: &str) -> Result<UnixListener> {
     Ok(UnixListener::from(socket))
 }
 
+/// Creates a `UnixListener` bound to a Linux abstract namespace socket.
+pub fn unix_listener_from_abstract_name(name: &[u8]) -> Result<UnixListener> {
+    let addr = SocketAddrUnix::new_abstract_name(name)?;
+    let socket = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
+    bind(&socket, &addr)?;
+    listen(&socket, 10)?; // Backlog of 10
+    Ok(UnixListener::from(socket))
+}
+
 /// Sends a datagram packet to a Unix socket path.
 pub fn unix_datagram_sendto(path: &str, buf: &[u8]) -> Result<()> {
     set_socket_create_context(&get_current_attr()?)?;

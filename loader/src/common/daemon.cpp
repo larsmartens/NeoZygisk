@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <cstddef>
 
 #include "logging.hpp"
 #include "socket_utils.hpp"
@@ -157,9 +158,11 @@ int Connect(uint8_t retry) {
         .sun_family = AF_UNIX,
         .sun_path = {0},
     };
-    auto socket_path = TMP_PATH + kCPSocketName;
-    strcpy(addr.sun_path, socket_path.c_str());
-    socklen_t socklen = sizeof(addr);
+    static_assert(sizeof(kCPSocketName) < sizeof(addr.sun_path),
+                  "NeoZygisk daemon socket name is too long");
+    addr.sun_path[0] = '\0';
+    memcpy(addr.sun_path + 1, kCPSocketName, sizeof(kCPSocketName) - 1);
+    socklen_t socklen = offsetof(sockaddr_un, sun_path) + sizeof(kCPSocketName);
 
     while (retry--) {
         int r = connect(fd, reinterpret_cast<struct sockaddr *>(&addr), socklen);

@@ -12,7 +12,7 @@
 #define LP_SELECT(lp32, lp64) lp32
 #endif
 
-constexpr auto kCPSocketName = "/" LP_SELECT("cp32", "cp64") ".sock";
+constexpr char kCPSocketName[] = LP_SELECT("neozygisk-cp32", "neozygisk-cp64");
 
 class UniqueFd {
     using Fd = int;
