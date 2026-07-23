@@ -109,9 +109,7 @@ void arm_emergency_disable(const char* stage, int failures) {
 }  // namespace
 
 void Init(const char *path) {
-    if (path != nullptr) {
-        TMP_PATH = path;
-    }
+    TMP_PATH = path;
 }
 
 std::string GetTmpPath() { return TMP_PATH; }
@@ -157,7 +155,7 @@ int Connect(uint8_t retry) {
         .sun_family = AF_UNIX,
         .sun_path = {0},
     };
-    auto socket_path = TMP_PATH + kCPSocketName;
+    auto socket_path = GetTmpPath() + kCPSocketName;
     strcpy(addr.sun_path, socket_path.c_str());
     socklen_t socklen = sizeof(addr);
 

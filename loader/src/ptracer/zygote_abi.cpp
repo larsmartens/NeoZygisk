@@ -104,7 +104,13 @@ bool ZygoteAbiManager::ensure_daemon_created() {
         if (pid == 0) {
             std::string daemon_name = "./bin/zygiskd";
             daemon_name += abi_name_;
-            execl(daemon_name.c_str(), daemon_name.c_str(), nullptr);
+            execl(
+                daemon_name.c_str(),
+                daemon_name.c_str(),
+                "--workdir",
+                zygiskd::GetTmpPath().c_str(),
+                nullptr
+            );
             PLOGE("exec daemon %s", daemon_name.c_str());
             exit(1);
         }
