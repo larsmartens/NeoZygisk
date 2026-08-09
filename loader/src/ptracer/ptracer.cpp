@@ -5,6 +5,7 @@
 #include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/ptrace.h>
+#include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -12,14 +13,34 @@
 
 #include <cinttypes>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "daemon.hpp"
 #include "logging.hpp"
 #include "utils.hpp"
+
+static void log_injection_path_diagnostics(int pid, const char *lib_path) {
+    struct stat st{};
+    std::string zygote_root_path = "/proc/" + std::to_string(pid) + "/root" + lib_path;
+
+    if (stat(lib_path, &st) == 0) {
+        LOGI("local path exists before dlopen: %s mode=%o size=%lld", lib_path,
+             static_cast<unsigned>(st.st_mode & 07777), static_cast<long long>(st.st_size));
+    } else {
+        PLOGE("local stat failed before dlopen: %s", lib_path);
+    }
+
+    if (stat(zygote_root_path.c_str(), &st) == 0) {
+        LOGI("zygote-root path exists before dlopen: %s mode=%o size=%lld",
+             zygote_root_path.c_str(), static_cast<unsigned>(st.st_mode & 07777),
+             static_cast<long long>(st.st_size));
+    } else {
+        PLOGE("zygote-root stat failed before dlopen: %s", zygote_root_path.c_str());
+    }
+}
 
 /**
  * @brief Injects a shared library into a running process at its main entry point.
@@ -202,6 +223,7 @@ bool inject_on_main(int pid, const char *lib_path) {
     auto libc_return_addr = find_module_return_addr(map, "libc.so");
 
     // Remotely call dlopen(lib_path, RTLD_NOW)
+    log_injection_path_diagnostics(pid, lib_path);
     LOGV("executing remote call to dlopen(\"%s\")", lib_path);
     auto dlopen_addr = find_func_addr(local_map, map, "libdl.so", "dlopen");
     if (dlopen_addr == nullptr) {
@@ -246,6 +268,9 @@ bool inject_on_main(int pid, const char *lib_path) {
         err.resize(dlerror_len + 1, 0);
         read_proc(pid, (uintptr_t) dlerror_str_addr, err.data(), dlerror_len);
         LOGE("dlopen error: %s", err.c_str());
+        log_injection_path_diagnostics(pid, lib_path);
+        LOGE(
+            "If the path exists but dlopen reports ENOENT, suspect SELinux traversal or linker namespace denial");
         return false;
     }
     LOGI("successfully loaded library via remote dlopen, handle: 0x%" PRIxPTR, remote_handle);
